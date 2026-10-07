@@ -1,8 +1,8 @@
 """两端与云端共用的协议。视频的原始 5 字节包头保持不变。
 
 链路 0 = 局域网/手机 USB；链路 1 = 阿里云/CPE。
-注册报文和云端入口加 HMAC，避免公开中继被陌生报文占用。
-HMAC 只验证来源，不加密视频；SSH 私钥不参与视频传输。
+注册报文和云端入口保留 HMAC 格式。本实验的 token 已公开，
+只用作实验匹配和一致性检查，不提供防伪认证或视频加密。SSH 私钥不参与视频传输。
 """
 import hashlib
 import hmac
@@ -23,6 +23,17 @@ def load_config(path):
     if len(config.get("token", "")) < 16:
         raise ValueError("token 至少 16 个字符，两端和云端必须一致。")
     return config
+
+
+def lan_endpoint(ip, port):
+    """检查云端公告的IPv4和端口，避免无效公告导致接收线程退出。"""
+    try:
+        socket.inet_pton(socket.AF_INET, ip)
+        if ip == "0.0.0.0" or type(port) is not int or not 1 <= port <= 65535:
+            return None
+    except (TypeError, OSError):
+        return None
+    return ip, port
 
 
 def signed_message(magic, payload, token):

@@ -1,5 +1,5 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0.."
-python receive\main.py
+powershell -NoProfile -ExecutionPolicy Bypass -File launch_experiment.ps1 -Role receive
 pause

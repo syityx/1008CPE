@@ -9,11 +9,13 @@ import threading
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import protocol as wire
 from cloud_relay import Relay
 from initialize_config import initialize_configs
+import network_setup
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "send"))
@@ -68,9 +70,22 @@ class ProtocolTests(unittest.TestCase):
             configs = [json.loads((root / name).read_text(encoding="utf-8")) for name in created]
             self.assertEqual(len({cfg["token"] for cfg in configs}), 1)
             self.assertGreaterEqual(len(configs[0]["token"]), 16)
+            self.assertEqual(configs[0]["token"], test_config_defaults()["token"])
             before = {name: (root / name).read_bytes() for name in created}
             self.assertEqual(initialize_configs(root, "203.0.113.20"), [])
             self.assertEqual(before, {name: (root / name).read_bytes() for name in created})
+
+    def test_initialization_needs_no_manual_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("send/config", "receive/config", "cloud_config"):
+                path = root / (name + ".example.json")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / (name + ".example.json"), path)
+            self.assertEqual(len(initialize_configs(root)), 3)
+            cfg = wire.load_config(root / "receive/config.json")
+            self.assertEqual(cfg["cloud_host"], "47.97.248.31")
+            self.assertEqual(cfg["sender_host"], "auto")
 
     def test_original_header_and_feedback(self):
         packet = wire.pack_video(1, 258, b"abc")
@@ -140,6 +155,45 @@ class ReorderTests(unittest.TestCase):
         self.assertEqual(buf.overflow, 1)
 
 
+def test_config_defaults():
+    return json.loads((ROOT / "send/config.example.json").read_text(encoding="utf-8"))
+
+
+class InterfaceTests(unittest.TestCase):
+    def test_usb_and_direct_wifi_route_plans(self):
+        cpe = dict(ip="192.168.2.180", prefix=24, index=8, name="CPE", gateway="192.168.2.230", wifi=False)
+        usb = dict(ip="10.210.158.92", prefix=24, index=13, name="USB", gateway="10.210.158.59", wifi=False)
+        wifi = dict(ip="192.168.1.20", prefix=24, index=14, name="Wi-Fi", gateway="192.168.1.1", wifi=True)
+        virtual = dict(ip="172.16.1.1", prefix=24, index=15, name="VMware", gateway="172.16.1.2", wifi=False)
+        for lan, next_hop in ((usb, usb["gateway"]), (wifi, "0.0.0.0")):
+            cfg = test_config("receive/config.json")
+            with patch.object(network_setup.sys, "platform", "win32"), \
+                    patch.object(network_setup, "windows_interfaces", return_value=[virtual, cpe, lan]), \
+                    patch.object(network_setup, "ensure_host_route") as route:
+                network_setup.prepare_receiver(cfg)
+                network_setup.ensure_sender_route(cfg, "192.168.1.10")
+                self.assertEqual((cfg["cpe_bind_ip"], cfg["lan_bind_ip"]), (cpe["ip"], lan["ip"]))
+                self.assertEqual(route.call_args_list[0].args, ("47.97.248.31", cpe["gateway"], 8))
+                self.assertEqual(route.call_args_list[1].args, ("192.168.1.10", next_hop, lan["index"]))
+
+    def test_explicit_sender_ignores_discovery(self):
+        cfg = test_config("receive/config.json")
+        cfg.update(sender_host="127.0.0.1", sender_lan_port=1234, auto_routes=False)
+        combiner = receive.Combiner(cfg)
+        combiner.discover_sender(["192.168.1.10", 30002])
+        self.assertFalse(combiner.auto_sender)
+        self.assertEqual(combiner.lan_target, ("127.0.0.1", 1234))
+
+    def test_sender_auto_prefers_wifi(self):
+        rows = [dict(ip="10.1.1.1", index=1, name="LAN", gateway="10.1.1.254", wifi=False),
+                dict(ip="192.168.1.10", index=2, name="Wi-Fi", gateway="192.168.1.1", wifi=True)]
+        cfg = test_config("send/config.json")
+        with patch.object(network_setup.sys, "platform", "win32"), \
+                patch.object(network_setup, "windows_interfaces", return_value=rows):
+            network_setup.prepare_sender(cfg)
+        self.assertEqual(cfg["lan_bind_ip"], "192.168.1.10")
+
+
 class NetworkTests(unittest.TestCase):
     def start_relay(self, config):
         relay = Relay(config)
@@ -186,7 +240,37 @@ class NetworkTests(unittest.TestCase):
         wait_for(lambda: relay.stats["offline"] == 1)
         self.assertEqual(relay.stats["forwarded"], 2)
 
+    def test_sender_metadata_validation_and_expiry(self):
+        cfg = test_config("cloud_config.json")
+        cfg.update(bind_ip="127.0.0.1", data_port=free_port(), control_port=free_port(), peer_timeout=0.2)
+        relay = self.start_relay(cfg)
+        sock = wire.udp_socket("127.0.0.1", 0)
+        self.addCleanup(sock.close)
+        sock.settimeout(1)
+        target = ("127.0.0.1", cfg["control_port"])
+        def control(kind, **fields):
+            sock.sendto(wire.make_control(kind, cfg["token"], cfg["experiment_id"], **fields), target)
+        control("announce_sender", lan_ip="invalid", lan_port=30002)
+        wait_for(lambda: relay.stats["invalid"] == 1)
+        self.assertIsNone(relay.sender)
+        control("announce_sender", lan_ip="192.168.1.10", lan_port=30002)
+        reply, _ = sock.recvfrom(4096)
+        self.assertEqual(wire.parse_control(reply, cfg["token"], cfg["experiment_id"])["kind"], "sender_announced")
+        control("register")
+        reply, _ = sock.recvfrom(4096)
+        self.assertEqual(wire.parse_control(reply, cfg["token"], cfg["experiment_id"])["sender_lan"], ["192.168.1.10", 30002])
+        relay.sender_seen = time.monotonic() - 1
+        control("register")
+        reply, _ = sock.recvfrom(4096)
+        self.assertIsNone(wire.parse_control(reply, cfg["token"], cfg["experiment_id"])["sender_lan"])
+
     def test_full_two_path_split_relay_combine(self):
+        self.run_two_path("auto")
+
+    def test_full_two_path_with_explicit_sender(self):
+        self.run_two_path("127.0.0.1")
+
+    def run_two_path(self, sender_host):
         # 配置全部改成回环地址，只验证程序，不触碰真实网卡或公网。
         cloud_cfg = test_config("cloud_config.json")
         cloud_cfg.update(bind_ip="127.0.0.1", data_port=free_port(), control_port=free_port())
@@ -198,9 +282,9 @@ class NetworkTests(unittest.TestCase):
         sc = test_config("send/config.json")
         sc.update(source_port=free_port(), lan_bind_ip="127.0.0.1", lan_port=free_port(),
                   cloud_bind_ip="127.0.0.1", cloud_host="127.0.0.1", cloud_data_port=cloud_cfg["data_port"],
-                  fixed_g=5, initial_g=5)
+                  cloud_control_port=cloud_cfg["control_port"], announce_interval=0.05, fixed_g=5, initial_g=5)
         rc = test_config("receive/config.json")
-        rc.update(lan_bind_ip="127.0.0.1", cpe_bind_ip="127.0.0.1", sender_host="127.0.0.1",
+        rc.update(lan_bind_ip="127.0.0.1", cpe_bind_ip="127.0.0.1", sender_host=sender_host, auto_routes=False,
                   sender_lan_port=sc["lan_port"], lan_receive_port=free_port(), cpe_receive_port=free_port(),
                   cloud_host="127.0.0.1", cloud_control_port=cloud_cfg["control_port"],
                   vlc_port=output.getsockname()[1], keepalive_interval=0.05, reorder_timeout=0.5)
@@ -210,6 +294,7 @@ class NetworkTests(unittest.TestCase):
         splitter.start()
         combiner.start()
         wait_for(lambda: all(combiner.online))
+        self.assertEqual(combiner.lan_target, ("127.0.0.1", sc["lan_port"]))
         count = 300
         expected = [struct.pack("!I", i) + bytes([i % 256]) * 1312 for i in range(count)]
         for payload in expected:

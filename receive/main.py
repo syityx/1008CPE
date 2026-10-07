@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import protocol as wire
+import network_setup
 
 LOG = logging.getLogger("receive")
 
@@ -86,6 +87,9 @@ class Combiner:
         self.threads = []
         self.online = [0.0, 0.0]
         self.observed = [None, None]
+        self.target_lock = threading.Lock()
+        self.auto_sender = config.get("sender_host") in ("auto", "", "0.0.0.0")
+        self.lan_target = None if self.auto_sender else (config["sender_host"], config["sender_lan_port"])
         self.stats = {"received0": 0, "received1": 0, "output": 0, "invalid": 0}
 
     def start(self):
@@ -99,7 +103,7 @@ class Combiner:
         except Exception:
             self.close()
             raise
-        targets = [(self.config["sender_host"], self.config["sender_lan_port"]),
+        targets = [self.lan_target,
                    (self.config["cloud_host"], self.config["cloud_control_port"])]
         jobs = [(self.rxThread, (0, self.lan, targets[0])),
                 (self.rxThread, (1, self.cpe, targets[1])),
@@ -121,6 +125,16 @@ class Combiner:
     def rxThread(self, media, sock, target):
         next_register = next_feedback = 0.0
         while not self.stop.is_set():
+            if media == 0:
+                with self.target_lock:
+                    current = self.lan_target
+                if current != target:
+                    target = current
+                    next_register = next_feedback = 0.0
+                    self.online[0] = 0.0
+                if target is None:
+                    self.stop.wait(0.1)
+                    continue
             now = time.monotonic()
             if now >= next_register:
                 registration = wire.make_control("register", self.config["token"], self.config["experiment_id"])
@@ -148,6 +162,8 @@ class Combiner:
                 continue
             control = wire.parse_control(packet, self.config["token"], self.config["experiment_id"])
             if control and control.get("kind") == "registered":
+                if media == 1 and self.auto_sender:
+                    self.discover_sender(control.get("sender_lan"))
                 self.online[media] = time.monotonic()
                 observed = control.get("observed")
                 if observed != self.observed[media]:
@@ -161,6 +177,23 @@ class Combiner:
             _, number, payload = video
             self.stats[f"received{media}"] += 1
             self.buffer.put(media, number, payload)
+
+    def discover_sender(self, endpoint):
+        """经云端发现LAN目标，先确认出口，再交给LAN线程；兼容手机USB NAT。"""
+        if not self.auto_sender:
+            return
+        if not isinstance(endpoint, list) or len(endpoint) != 2:
+            return
+        target = wire.lan_endpoint(*endpoint)
+        if target is None:
+            return
+        with self.target_lock:
+            if self.lan_target == target:
+                return
+        network_setup.ensure_sender_route(self.config, target[0])
+        with self.target_lock:
+            self.lan_target = target
+        LOG.info("已自动获取发送端LAN地址 %s:%s，开始局域网注册", *target)
 
     def txThread(self):
         while not self.stop.is_set():
@@ -201,15 +234,13 @@ def main():
     for key, value in [("lan_bind_ip", args.lan_ip), ("cpe_bind_ip", args.cpe_ip), ("sender_host", args.sender_ip)]:
         if value:
             config[key] = value
-    for key in ("lan_bind_ip", "cpe_bind_ip", "sender_host"):
-        try:
-            socket.inet_pton(socket.AF_INET, config[key])
-        except OSError:
-            parser.error(f"请在配置文件或命令行填写 {key} 的真实 IPv4 地址。")
-        if config[key] == "0.0.0.0":
-            parser.error(f"{key} 必须指定实际地址，避免两路走同一网络。")
     app = Combiner(config)
     try:
+        network_setup.prepare_receiver(config)
+        if not app.auto_sender:
+            if wire.lan_endpoint(config["sender_host"], config["sender_lan_port"]) is None:
+                raise ValueError("发送端IPv4或端口无效")
+            network_setup.ensure_sender_route(config, config["sender_host"])
         app.start()
         while not app.stop.wait(0.5):
             pass

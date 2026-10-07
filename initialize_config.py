@@ -1,11 +1,9 @@
-"""从公开示例配置生成三端本地配置，自动生成相同的随机实验令牌。
+"""缺失配置时从模板补齐；模板已包含本实验的固定云地址与公开共享token。
 
-运行：python initialize_config.py --cloud-host 你的云服务器公网IPv4
-已有本地配置不会被覆盖；本地config.json已加入.gitignore。
+下载仓库即可使用，不必运行初始化。已有配置不会被覆盖。
 """
 import argparse
 import json
-import secrets
 import socket
 from pathlib import Path
 
@@ -24,7 +22,8 @@ def initialize_configs(root, cloud_host=None):
     tokens = {cfg.get("token", "") for cfg in existing.values()}
     if tokens and (len(tokens) != 1 or len(next(iter(tokens))) < 16):
         raise ValueError("已有配置的令牌无效或不一致，请先检查，程序不会覆盖它们。")
-    token = next(iter(tokens)) if tokens else secrets.token_hex(24)
+    defaults = json.loads((root / "send/config.example.json").read_text(encoding="utf-8-sig"))
+    token = next(iter(tokens)) if tokens else defaults["token"]
     hosts = {cfg["cloud_host"] for cfg in existing.values() if "cloud_host" in cfg}
     if len(hosts) > 1:
         raise ValueError("已有两端配置的云服务器地址不一致。")
@@ -34,7 +33,7 @@ def initialize_configs(root, cloud_host=None):
             raise ValueError("指定的云地址与已有配置不同，程序不会修改已有配置。")
         cloud_host = saved_host
     if not cloud_host:
-        raise ValueError("首次初始化请指定 --cloud-host 云服务器公网IPv4。")
+        cloud_host = defaults["cloud_host"]
     try:
         socket.inet_pton(socket.AF_INET, cloud_host)
     except OSError:
@@ -67,7 +66,7 @@ def main():
         parser.error(str(exc))
     if created:
         print("已生成：" + "、".join(created))
-        print("三端已使用相同的随机令牌。请把这套配置分别提供给两端和云端，不要各自重复生成。")
+        print("已补齐固定实验配置，无需另外生成token。本实验云端已同步配置。")
     else:
         print("三份本地配置均已存在，未修改。")
 

@@ -1,7 +1,4 @@
-# 真实配置含实验令牌及部署地址，仅保留在本机。
-/send/config.json
-/receive/config.json
-/cloud_config.json
+# 固定实验配置按用户要求公开；个人记录仍保留在本机。
 /readme.txt
 
 # Python 缓存、日志和编辑器本地文件。

@@ -22,6 +22,8 @@ class Relay:
         self.stop = threading.Event()
         self.peer = None
         self.peer_seen = 0.0
+        self.sender = None
+        self.sender_seen = 0.0
         self.sockets = []
         self.stats = {"forwarded": 0, "offline": 0, "invalid": 0, "registrations": 0}
 
@@ -62,6 +64,17 @@ class Relay:
 
     def register(self, packet, address):
         control = wire.parse_control(packet, self.config["token"], self.config["experiment_id"])
+        if control and control.get("kind") == "announce_sender":
+            endpoint = wire.lan_endpoint(control.get("lan_ip"), control.get("lan_port"))
+            if endpoint is None:
+                self.stats["invalid"] += 1
+                return
+            if endpoint != self.sender:
+                LOG.info("发送端LAN地址公告 %s:%s", *endpoint)
+            self.sender, self.sender_seen = endpoint, time.monotonic()
+            reply = wire.make_control("sender_announced", self.config["token"], self.config["experiment_id"])
+            self.control.sendto(reply, address)
+            return
         if not control or control.get("kind") != "register":
             self.stats["invalid"] += 1
             return
@@ -69,7 +82,10 @@ class Relay:
             LOG.info("接收端注册，实际 NAT 回传地址 %s:%s", *address)
         self.peer, self.peer_seen = address, time.monotonic()
         self.stats["registrations"] += 1
-        reply = wire.make_control("registered", self.config["token"], self.config["experiment_id"], observed=list(address))
+        # 只提供近期保活的发送端地址；接收端再通过LAN独立注册建立直接回程。
+        sender = self.sender if time.monotonic() - self.sender_seen < self.config["peer_timeout"] else None
+        reply = wire.make_control("registered", self.config["token"], self.config["experiment_id"],
+                                  observed=list(address), sender_lan=list(sender) if sender else None)
         # 同一公网 IP、同一源端口回包，兼容限制较严格的 NAT。
         self.control.sendto(reply, address)
 
