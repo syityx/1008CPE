@@ -1,0 +1,26 @@
+# 云端 UDP 中继常驻服务。代码和配置位于 /root/1008CPE。
+# 启动：systemctl enable --now 1008cpe-relay.service
+# 停止：systemctl stop 1008cpe-relay.service
+[Unit]
+Description=1008CPE UDP video relay
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/1008CPE
+ExecStart=/usr/bin/python3 /root/1008CPE/cloud_relay.py --config /root/1008CPE/cloud_config.json
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 # Wi-Fi与CPE双链路视频实验
 
-发送端笔记本连接路由器Wi-Fi。接收端台式机通过手机USB共享同一Wi-Fi，并通过以太网连接CPE。蜂窝分支使用云服务器UDP中继，云地址由本地配置指定。云端只手动运行，不安装后台服务。
+发送端笔记本连接路由器Wi-Fi。接收端台式机通过手机USB共享同一Wi-Fi，并通过以太网连接CPE。蜂窝分支使用云服务器UDP中继，云地址由本地配置指定。云端支持前台运行或systemd常驻服务。
 
 **也支持接收电脑直接连接Wi-Fi。** 接收端的 `lan_bind_ip` / `--lan-ip` 此时填写本机Wi-Fi IPv4，不再填写USB地址。局域网注册在直接Wi-Fi上同样有效，无需手机、NAT或端口映射。程序的包头、分流和合流不变；路由脚本会自动识别发送端是否位于同一网段，选择本地直连或USB网关。
 
@@ -21,6 +21,7 @@ VLC -> 发送分流器（localhost:49998）
 - `protocol.py`：原视频包头、缓存反馈、认证信封。
 - `test_experiment.py`：本地自动验证，不依赖VLC或真实云服务器，也不读取真实部署配置。
 - `initialize_config.py`：从模板生成三端配置和共享随机令牌。
+- `deploy/1008cpe-relay.service`：云端常驻服务，支持开机启动和退出后自动重启。
 
 使用 Python 3.10 或更新版本，全部为标准库，无需安装 numpy。复制到另一台电脑时，保留整个 `1008CPE` 目录结构，不能只复制 `main.py`。真实配置和个人实验记录已加入忽略规则，不提交到公开仓库。
 
@@ -74,14 +75,29 @@ Windows防火墙需要允许发送端LAN UDP 30002，以及接收端UDP 30002、
 
 ## 启动顺序
 
-1. 云服务器手动启动中继。已部署时：
+1. 云服务器启动中继。如果已安装常驻服务，运行：
+
+   ```bash
+   systemctl start 1008cpe-relay.service
+   systemctl status 1008cpe-relay.service --no-pager
+   ```
+
+   常驻服务不依赖SSH窗口。首次安装时，先将云端代码与配置放在 `/root/1008CPE`，再运行：
+
+   ```bash
+   install -m 644 deploy/1008cpe-relay.service /etc/systemd/system/1008cpe-relay.service
+   systemctl daemon-reload
+   systemctl enable --now 1008cpe-relay.service
+   ```
+
+   前台调试也可使用下面的命令，但先停止常驻服务，避免争用端口：
 
    ```bash
    cd /root/1008CPE
    python3 cloud_relay.py
    ```
 
-   保持SSH窗口打开；按Ctrl+C停止。不配置开机启动或后台服务。
+   前台运行时保持SSH窗口打开，按Ctrl+C停止。常驻服务管理命令：`systemctl stop 1008cpe-relay.service`（停止）、`systemctl restart 1008cpe-relay.service`（重启）、`journalctl -u 1008cpe-relay.service -n 50 --no-pager`（查看日志）。
 
 2. 笔记本启动发送端：
 
@@ -125,7 +141,7 @@ Windows防火墙需要允许发送端LAN UDP 30002，以及接收端UDP 30002、
 
 实验环境还完成了真实CPE到云服务器的注册与原包回传测试。网络环境变化后仍需重新验证路由、防火墙和UDP回程。完整双机VLC播放需在两端填写实际地址后验证。
 
-手动启动云端后，可在接收电脑运行 `python cloud_probe.py --bind-ip 192.168.2.180`。探测成功后再启动正式接收端，它会重新登记自己的地址。正式实验运行时不要同时执行探测，以免临时替换云端接收目标。
+确认云端中继运行后，可在接收电脑运行 `python cloud_probe.py --bind-ip 192.168.2.180`。探测成功后再启动正式接收端，它会重新登记自己的地址。正式实验运行时不要同时执行探测，以免临时替换云端接收目标。
 
 - LAN注册失败：检查笔记本IP、USB网卡IP、到笔记本的路由、手机是否支持共享Wi-Fi、路由器客户端隔离以及Windows防火墙。
 - CPE注册失败：检查云端中继是否手动运行、UDP 30007是否放行、阿里云目标路由是否走CPE。
