@@ -1,0 +1,8 @@
+{
+  "token": "",
+  "experiment_id": "1008CPE",
+  "bind_ip": "0.0.0.0",
+  "data_port": 30006,
+  "control_port": 30007,
+  "peer_timeout": 15
+}

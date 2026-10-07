@@ -1,0 +1,17 @@
+{
+  "token": "",
+  "experiment_id": "1008CPE",
+  "source_ip": "127.0.0.1",
+  "source_port": 49998,
+  "lan_bind_ip": "0.0.0.0",
+  "lan_port": 30002,
+  "cloud_bind_ip": "0.0.0.0",
+  "cloud_host": "YOUR_CLOUD_PUBLIC_IP",
+  "cloud_data_port": 30006,
+  "peer_timeout": 15,
+  "strategy_interval": 20,
+  "warmup_intervals": 10,
+  "initial_g": 5,
+  "fixed_g": null,
+  "max_queue_packets": 8192
+}

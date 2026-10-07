@@ -1,0 +1,19 @@
+{
+  "token": "",
+  "experiment_id": "1008CPE",
+  "lan_bind_ip": "",
+  "cpe_bind_ip": "192.168.2.180",
+  "sender_host": "",
+  "sender_lan_port": 30002,
+  "lan_receive_port": 30002,
+  "cpe_receive_port": 30006,
+  "cloud_host": "YOUR_CLOUD_PUBLIC_IP",
+  "cloud_control_port": 30007,
+  "keepalive_interval": 3,
+  "registration_timeout": 15,
+  "feedback_interval": 0.02,
+  "reorder_timeout": 0.1,
+  "max_queue_packets": 8192,
+  "vlc_host": "127.0.0.1",
+  "vlc_port": 60001
+}

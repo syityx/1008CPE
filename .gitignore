@@ -1,0 +1,20 @@
+# 真实配置含实验令牌及部署地址，仅保留在本机。
+/send/config.json
+/receive/config.json
+/cloud_config.json
+/readme.txt
+
+# Python 缓存、日志和编辑器本地文件。
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.venv/
+.idea/
+.vscode/
+
+# SSH 私钥或其他凭据不进入公开仓库。
+*.pem
+*.key
+.env
+.env.*
