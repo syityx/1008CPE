@@ -15,5 +15,7 @@
   "fixed_g": null,
   "max_queue_packets": 8192,
   "cloud_control_port": 30007,
-  "announce_interval": 3
+  "announce_interval": 3,
+  "file_burst_packets": 8,
+  "file_burst_interval": 0.001
 }

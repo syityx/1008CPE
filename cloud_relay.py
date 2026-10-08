@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import protocol as wire
+import file_protocol as files
 
 LOG = logging.getLogger("cloud")
 
@@ -24,8 +25,10 @@ class Relay:
         self.peer_seen = 0.0
         self.sender = None
         self.sender_seen = 0.0
+        self.sender_peer = None
+        self.sender_service = "video"
         self.sockets = []
-        self.stats = {"forwarded": 0, "offline": 0, "invalid": 0, "registrations": 0}
+        self.stats = {"forwarded": 0, "offline": 0, "invalid": 0, "registrations": 0, "file_requests": 0}
 
     def run(self):
         selector = selectors.DefaultSelector()
@@ -72,8 +75,26 @@ class Relay:
             if endpoint != self.sender:
                 LOG.info("发送端LAN地址公告 %s:%s", *endpoint)
             self.sender, self.sender_seen = endpoint, time.monotonic()
+            self.sender_peer = address
+            self.sender_service = control.get("service", "video")
             reply = wire.make_control("sender_announced", self.config["token"], self.config["experiment_id"])
             self.control.sendto(reply, address)
+            return
+        # 文件模式双向转发：B的请求沿已建立的UDP映射送到A；A无需公网入站端口。
+        if control and control.get("kind") in files.REQUEST_KINDS | files.REPLY_KINDS:
+            now = time.monotonic()
+            if (self.peer is None or self.sender_peer is None or self.sender_service != "files"
+                    or now - self.peer_seen >= self.config["peer_timeout"]
+                    or now - self.sender_seen >= self.config["peer_timeout"]):
+                self.stats["offline"] += 1
+                return
+            if control["kind"] in files.REQUEST_KINDS and address == self.peer:
+                self.control.sendto(packet, self.sender_peer)
+                self.stats["file_requests"] += 1
+            elif control["kind"] in files.REPLY_KINDS and address == self.sender_peer:
+                self.control.sendto(packet, self.peer)
+            else:
+                self.stats["invalid"] += 1
             return
         if not control or control.get("kind") != "register":
             self.stats["invalid"] += 1
@@ -85,11 +106,23 @@ class Relay:
         # 只提供近期保活的发送端地址；接收端再通过LAN独立注册建立直接回程。
         sender = self.sender if time.monotonic() - self.sender_seen < self.config["peer_timeout"] else None
         reply = wire.make_control("registered", self.config["token"], self.config["experiment_id"],
-                                  observed=list(address), sender_lan=list(sender) if sender else None)
+                                  observed=list(address), sender_lan=list(sender) if sender else None,
+                                  sender_service=self.sender_service if sender else None)
         # 同一公网 IP、同一源端口回包，兼容限制较严格的 NAT。
         self.control.sendto(reply, address)
 
     def forward(self, packet):
+        if packet.startswith(files.MAGIC):
+            fragment = files.unpack_fragment(packet, self.config["token"])
+            if fragment is None or fragment[1] != 1:
+                self.stats["invalid"] += 1
+            elif self.peer is None or time.monotonic() - self.peer_seen >= self.config["peer_timeout"]:
+                self.stats["offline"] += 1
+            else:
+                # 文件片保留签名和唯一请求标识，由B去重、补片、校验整个文件。
+                self.control.sendto(packet, self.peer)
+                self.stats["forwarded"] += 1
+            return
         original = wire.verify_message(packet, wire.DATA_MAGIC, self.config["token"])
         video = wire.unpack_video(original) if original is not None else None
         if video is None or video[0] != 1:
