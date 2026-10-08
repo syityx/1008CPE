@@ -1,8 +1,7 @@
 ﻿param(
     [Parameter(Mandatory=$true)][ValidateSet('send','receive')][string]$Role,
     [string]$PythonPath,
-    [switch]$CheckPython,
-    [switch]$Video
+    [switch]$CheckPython
 )
 $ErrorActionPreference = 'Stop'
 $env:PYTHONUTF8 = '1'
@@ -56,7 +55,6 @@ try {
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Role {1} -PythonPath "{2}"' -f $PSCommandPath, $Role, $python
-        if ($Video) { $arguments += ' -Video' }
         Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait
         exit
     }
@@ -71,9 +69,7 @@ try {
         -Direction Inbound -Action Allow -Protocol UDP -LocalPort $ports `
         -Program $python -Profile Any | Out-Null
     Write-Host "使用Python：$python"
-    # 默认启动文件循环下载；-Video保留原VLC实验入口。
-    $entry = if ($Video) { "$Role/main.py" } else { "$Role/files.py" }
-    & $python $entry
+    & $python "$Role/main.py"
 } catch {
     Write-Host "启动失败：$($_.Exception.Message)" -ForegroundColor Red
     if ($CheckPython) { exit 1 }

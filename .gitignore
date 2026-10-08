@@ -10,10 +10,6 @@ __pycache__/
 .idea/
 .vscode/
 
-# 测试文件启动时生成；个人源文件与下载/实验记录不提交。
-/send/files/
-/receive/results/
-
 # SSH 私钥或其他凭据不进入公开仓库。
 *.pem
 *.key
